@@ -5,7 +5,6 @@
 import { Computed, Watcher } from './signals';
 
 let needsEnqueue = true;
-let pendingEffects: Set<Computed<void>> = new Set();
 
 const watcher = new Watcher(() => {
   if (needsEnqueue) {
