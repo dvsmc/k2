@@ -27,7 +27,6 @@ interface ComponentScope {
 }
 
 interface ForItem {
-  key: unknown;
   element: Element;
   scope: ComponentScope;
   cleanup: () => void;
@@ -115,6 +114,10 @@ function mkEval(expr: string, wc: string): EvalFn {
 function mkExec(stmt: string, wc: string): ExecFn {
   return new Function('s', '$event', '$el', `${MAGIC_PREAMBLE}${wc}{${stmt}}`) as ExecFn;
 }
+
+// Convert camelCase or CSS custom property names to kebab-case for style.setProperty.
+const toKebab = (p: string): string =>
+  p.startsWith('--') ? p : p.replace(/[A-Z]/g, m => '-' + m.toLowerCase());
 
 // Perform an immutable deep-set on a plain object/array, returning a new root.
 // Supports both property names and numeric array indices in the path.
@@ -425,16 +428,14 @@ function processElement(el: Element, scope: ComponentScope): () => void {
               for (const obj of v as unknown[]) {
                 if (obj !== null && typeof obj === 'object') {
                   for (const [p, pv] of Object.entries(obj as Record<string, unknown>)) {
-                    const cssProp = p.startsWith('--') ? p : p.replace(/[A-Z]/g, m => '-' + m.toLowerCase());
-                    (el as HTMLElement).style.setProperty(cssProp, String(pv ?? ''));
+                    (el as HTMLElement).style.setProperty(toKebab(p), String(pv ?? ''));
                   }
                 }
               }
             } else if (v !== null && typeof v === 'object') {
               for (const [p, pv] of Object.entries(v as Record<string, unknown>)) {
                 // Support both camelCase (backgroundColor) and CSS custom properties (--my-var)
-                const cssProp = p.startsWith('--') ? p : p.replace(/[A-Z]/g, m => '-' + m.toLowerCase());
-                (el as HTMLElement).style.setProperty(cssProp, String(pv ?? ''));
+                (el as HTMLElement).style.setProperty(toKebab(p), String(pv ?? ''));
               }
             } else {
               el.setAttribute('style', String(v ?? ''));
@@ -564,8 +565,7 @@ function processIfDirective(template: HTMLTemplateElement, scope: ComponentScope
           const content = template.content.cloneNode(true) as DocumentFragment;
           const element = content.firstElementChild;
           if (!element) return;
-          const childCleanups: (() => void)[] = [processElement(element, scope)];
-          for (const c of processChildren(element, scope)) childCleanups.push(c);
+          const childCleanups = [processElement(element, scope), ...processChildren(element, scope)];
           anchor.parentNode?.insertBefore(element, anchor.nextSibling);
           currentElement = element;
           currentCleanup = () => childCleanups.forEach(f => f());
@@ -620,22 +620,9 @@ function processForDirective(template: HTMLTemplateElement, parentScope: Compone
     if (!element) throw new Error('x-for template must have a single root element');
 
     const itemScope = createItemScope(parentScope, element, itemName, indexName, item, index);
-    const cleanups: (() => void)[] = [processElement(element, itemScope)];
-
-    const walker = document.createTreeWalker(element, NodeFilter.SHOW_ELEMENT);
-    let node: Element | null;
-    while ((node = walker.nextNode() as Element | null)) {
-      if (node.tagName === 'TEMPLATE' && node.hasAttribute(D_FOR)) {
-        cleanups.push(processForDirective(node as HTMLTemplateElement, itemScope));
-      } else if (node.tagName === 'TEMPLATE' && node.hasAttribute(D_IF)) {
-        cleanups.push(processIfDirective(node as HTMLTemplateElement, itemScope));
-      } else {
-        cleanups.push(processElement(node, itemScope));
-      }
-    }
+    const cleanups = [processElement(element, itemScope), ...processChildren(element, itemScope)];
 
     return {
-      key: getKey(itemScope, index),
       element,
       scope: itemScope,
       cleanup: () => cleanups.forEach(fn => fn()),
@@ -738,40 +725,7 @@ function initializeComponent(root: Element): void {
   }
 
   processElement(root, scope);
-
-  // Collect x-for and x-if templates before walking (they remove themselves from DOM during processing)
-  const forTemplates: HTMLTemplateElement[] = [];
-  const ifTemplates: HTMLTemplateElement[] = [];
-  root.querySelectorAll(`template[${D_FOR}], template[${D_IF}]`).forEach(el => {
-    let parent = el.parentElement;
-    while (parent && parent !== root) {
-      if (parent.hasAttribute(D_DATA)) return;
-      parent = parent.parentElement;
-    }
-    if (el.hasAttribute(D_FOR)) forTemplates.push(el as HTMLTemplateElement);
-    else if (el.hasAttribute(D_IF)) ifTemplates.push(el as HTMLTemplateElement);
-  });
-
-  // Walk child elements.
-  // Use FILTER_REJECT on nested x-data roots, x-for, and x-if templates so the entire
-  // subtree is skipped — not just the root node. This prevents the outer walker
-  // from processing children that belong to a nested scope, and avoids
-  // double-processing elements inserted by x-for on re-initialization.
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
-    acceptNode(node: Node) {
-      const el = node as Element;
-      if (el.hasAttribute(D_DATA)) return NodeFilter.FILTER_REJECT;
-      if (el.tagName === 'TEMPLATE' && (el.hasAttribute(D_FOR) || el.hasAttribute(D_IF))) return NodeFilter.FILTER_REJECT;
-      return NodeFilter.FILTER_ACCEPT;
-    },
-  });
-  let node: Element | null;
-  while ((node = walker.nextNode() as Element | null)) {
-    processElement(node, scope);
-  }
-
-  for (const t of forTemplates) processForDirective(t, scope);
-  for (const t of ifTemplates) processIfDirective(t, scope);
+  processChildren(root, scope);
 }
 
 function init(root: Element | Document = document): void {
