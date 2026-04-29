@@ -1411,8 +1411,6 @@ describe('K2 Directives', () => {
     });
 
     it('should clean up inner effects when condition becomes false', async () => {
-      const logs: number[] = [];
-
       container.innerHTML = `
         <div x-data="{ show: true, count: 0 }">
           <button @click="show = false">hide</button>
@@ -1436,7 +1434,6 @@ describe('K2 Directives', () => {
       // Increment count — should not throw even though span is gone
       const incBtn = container.querySelector('#inc') as HTMLButtonElement;
       expect(() => { incBtn.click(); }).not.toThrow();
-      void logs; // suppress unused warning
     });
 
     it('should support x-if inside nested x-data', async () => {
