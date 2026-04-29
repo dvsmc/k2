@@ -2,9 +2,9 @@
 
 **Ultra-fast Alpine.js alternative powered by TC39 Signals**
 
-[![npm version](https://img.shields.io/npm/v/@farhanaliraza/k2-js.svg)](https://www.npmjs.com/package/@farhanaliraza/k2-js)
-[![gzip size](https://img.shields.io/badge/gzip-3.6KB-brightgreen)](https://bundlephobia.com/package/@farhanaliraza/k2-js)
-[![license](https://img.shields.io/npm/l/@farhanaliraza/k2-js.svg)](https://github.com/FarhanAliRaza/k2/blob/main/LICENSE)
+[![npm version](https://img.shields.io/npm/v/@dvsmc/k2.svg)](https://www.npmjs.com/package/@dvsmc/k2)
+[![gzip size](https://img.shields.io/badge/gzip-3.6KB-brightgreen)](https://bundlephobia.com/package/@dvsmc/k2)
+[![license](https://img.shields.io/npm/l/@dvsmc/k2.svg)](https://github.com/dvsmc/k2/blob/main/LICENSE)
 
 K2 is a lightweight reactive framework that brings Alpine.js-style declarative HTML with the performance of TC39 Signals. At just **3.6KB gzipped**, it's ~4x smaller than Alpine.js (~14KB) and ~2x smaller than Petite-Vue (~7KB).
 
@@ -22,22 +22,22 @@ K2 is a lightweight reactive framework that brings Alpine.js-style declarative H
 
 ```html
 <!-- unpkg -->
-<script src="https://unpkg.com/@farhanaliraza/k2-js"></script>
+<script src="https://unpkg.com/@dvsmc/k2"></script>
 
 <!-- jsDelivr -->
-<script src="https://cdn.jsdelivr.net/npm/@farhanaliraza/k2-js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@dvsmc/k2"></script>
 ```
 
 ### npm
 
 ```bash
-npm install @farhanaliraza/k2-js
+npm install @dvsmc/k2
 # or
-pnpm add @farhanaliraza/k2-js
+pnpm add @dvsmc/k2
 ```
 
 ```js
-import K2 from '@farhanaliraza/k2-js';
+import K2 from '@dvsmc/k2';
 ```
 
 ## Quick Start
@@ -48,7 +48,7 @@ import K2 from '@farhanaliraza/k2-js';
   <button @click="count++">+</button>
 </div>
 
-<script src="https://unpkg.com/@farhanaliraza/k2-js"></script>
+<script src="https://unpkg.com/@dvsmc/k2"></script>
 ```
 
 K2 auto-initializes when the DOM is ready. For manual control:
@@ -167,7 +167,7 @@ Define computed values as arrow functions in x-data:
 K2 exports its signal primitives for advanced use:
 
 ```js
-import { State, Computed, effect, untrack } from '@farhanaliraza/k2-js';
+import { State, Computed, effect, untrack } from '@dvsmc/k2';
 
 // Create reactive state
 const count = new State(0);
