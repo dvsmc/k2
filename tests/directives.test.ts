@@ -1165,4 +1165,461 @@ describe('K2 Directives', () => {
       expect(span?.textContent).toBe('world');
     });
   });
+
+  // ─── Bug fixes ───────────────────────────────────────────────────────────────
+
+  describe('x-data with no value / empty value', () => {
+    it('should treat bare x-data attribute as empty object without crashing', async () => {
+      container.innerHTML = `
+        <div x-data>
+          <span x-text="'hello'"></span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+      expect(container.querySelector('span')?.textContent).toBe('hello');
+    });
+
+    it('should treat x-data="" as empty object without crashing', async () => {
+      container.innerHTML = `
+        <div x-data="">
+          <span x-text="'world'"></span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+      expect(container.querySelector('span')?.textContent).toBe('world');
+    });
+  });
+
+  describe(':class binding correctness', () => {
+    it('should remove stale classes when object keys change between renders', async () => {
+      container.innerHTML = `
+        <div x-data="{ isError: true }">
+          <span :class="isError ? { 'text-red': true } : { 'text-green': true }">msg</span>
+          <button @click="isError = false">ok</button>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const span = container.querySelector('span')!;
+      expect(span.classList.contains('text-red')).toBe(true);
+      expect(span.classList.contains('text-green')).toBe(false);
+
+      container.querySelector('button')?.click();
+      await Promise.resolve();
+
+      // 'text-red' must be removed; 'text-green' must be added
+      expect(span.classList.contains('text-red')).toBe(false);
+      expect(span.classList.contains('text-green')).toBe(true);
+    });
+
+    it('should support array class syntax (truthy strings only)', async () => {
+      container.innerHTML = `
+        <div x-data="{ active: true }">
+          <span :class="['base', active && 'highlight', false && 'nope']">text</span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const span = container.querySelector('span')!;
+      expect(span.classList.contains('base')).toBe(true);
+      expect(span.classList.contains('highlight')).toBe(true);
+      expect(span.classList.contains('nope')).toBe(false);
+      // Array values '0', '1', '2' must NOT be added as class names
+      expect(span.classList.contains('0')).toBe(false);
+      expect(span.classList.contains('1')).toBe(false);
+    });
+
+    it('should support string class syntax without clobbering existing static classes', async () => {
+      container.innerHTML = `
+        <div x-data="{ extra: 'badge' }">
+          <span class="btn" :class="extra">text</span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const span = container.querySelector('span')!;
+      // Static class should be preserved
+      expect(span.classList.contains('btn')).toBe(true);
+      // Bound class should be added
+      expect(span.classList.contains('badge')).toBe(true);
+    });
+
+    it('should remove string-bound classes reactively', async () => {
+      container.innerHTML = `
+        <div x-data="{ cls: 'active' }">
+          <span class="btn" :class="cls">text</span>
+          <button @click="cls = 'disabled'">change</button>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const span = container.querySelector('span')!;
+      expect(span.classList.contains('active')).toBe(true);
+
+      container.querySelector('button')?.click();
+      await Promise.resolve();
+
+      expect(span.classList.contains('active')).toBe(false);
+      expect(span.classList.contains('disabled')).toBe(true);
+      expect(span.classList.contains('btn')).toBe(true); // static preserved
+    });
+  });
+
+  describe(':style with camelCase and CSS custom properties', () => {
+    it('should apply camelCase style properties (backgroundColor, fontSize)', async () => {
+      container.innerHTML = `
+        <div x-data="{ color: 'red', size: '20px' }">
+          <span :style="{ backgroundColor: color, fontSize: size }">text</span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const span = container.querySelector('span') as HTMLElement;
+      expect(span.style.backgroundColor).toBe('red');
+      expect(span.style.fontSize).toBe('20px');
+    });
+
+    it('should apply CSS custom properties (--my-color)', async () => {
+      container.innerHTML = `
+        <div x-data="{ primary: 'blue' }">
+          <span :style="{ '--primary-color': primary }">text</span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const span = container.querySelector('span') as HTMLElement;
+      expect(span.style.getPropertyValue('--primary-color')).toBe('blue');
+    });
+
+    it('should handle style array (merging multiple objects)', async () => {
+      container.innerHTML = `
+        <div x-data="{}">
+          <span :style="[{ color: 'red' }, { fontWeight: 'bold' }]">text</span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const span = container.querySelector('span') as HTMLElement;
+      expect(span.style.color).toBe('red');
+      expect(span.style.fontWeight).toBe('bold');
+    });
+  });
+
+  describe('x-cloak', () => {
+    it('should remove x-cloak attribute after element is processed', async () => {
+      container.innerHTML = `
+        <div x-data="{ msg: 'hi' }">
+          <span x-cloak x-text="msg"></span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const span = container.querySelector('span');
+      expect(span?.hasAttribute('x-cloak')).toBe(false);
+      expect(span?.textContent).toBe('hi');
+    });
+
+    it('should remove x-cloak on the root x-data element itself', async () => {
+      container.innerHTML = `
+        <div x-data="{ ok: true }" x-cloak>
+          <span x-text="ok"></span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const div = container.querySelector('[x-data]');
+      expect(div?.hasAttribute('x-cloak')).toBe(false);
+    });
+  });
+
+  describe('x-if directive', () => {
+    it('should render content when condition is true', async () => {
+      container.innerHTML = `
+        <div x-data="{ show: true }">
+          <template x-if="show">
+            <span id="msg">Hello</span>
+          </template>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      expect(container.querySelector('#msg')).not.toBeNull();
+      expect(container.querySelector('#msg')?.textContent).toBe('Hello');
+    });
+
+    it('should not render content when condition is false', async () => {
+      container.innerHTML = `
+        <div x-data="{ show: false }">
+          <template x-if="show">
+            <span id="msg">Hello</span>
+          </template>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      expect(container.querySelector('#msg')).toBeNull();
+    });
+
+    it('should insert/remove element reactively', async () => {
+      container.innerHTML = `
+        <div x-data="{ show: false }">
+          <button @click="show = !show">toggle</button>
+          <template x-if="show">
+            <span id="msg">Content</span>
+          </template>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      expect(container.querySelector('#msg')).toBeNull();
+
+      container.querySelector('button')?.click();
+      await Promise.resolve();
+      expect(container.querySelector('#msg')).not.toBeNull();
+
+      container.querySelector('button')?.click();
+      await Promise.resolve();
+      expect(container.querySelector('#msg')).toBeNull();
+    });
+
+    it('should support directives inside x-if content', async () => {
+      container.innerHTML = `
+        <div x-data="{ show: true, name: 'Alice' }">
+          <template x-if="show">
+            <p id="p" x-text="name"></p>
+          </template>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      expect(container.querySelector('#p')?.textContent).toBe('Alice');
+    });
+
+    it('should clean up inner effects when condition becomes false', async () => {
+      const logs: number[] = [];
+
+      container.innerHTML = `
+        <div x-data="{ show: true, count: 0 }">
+          <button @click="show = false">hide</button>
+          <button @click="count++" id="inc">inc</button>
+          <template x-if="show">
+            <span x-text="count"></span>
+          </template>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const span = container.querySelector('span');
+      expect(span).not.toBeNull();
+
+      // Hide — element removed
+      container.querySelector('button')?.click();
+      await Promise.resolve();
+      expect(container.querySelector('span')).toBeNull();
+
+      // Increment count — should not throw even though span is gone
+      const incBtn = container.querySelector('#inc') as HTMLButtonElement;
+      expect(() => { incBtn.click(); }).not.toThrow();
+      void logs; // suppress unused warning
+    });
+
+    it('should support x-if inside nested x-data', async () => {
+      container.innerHTML = `
+        <div x-data="{ visible: true }">
+          <div x-data="{ label: 'inner' }">
+            <template x-if="visible">
+              <span id="s" x-text="label"></span>
+            </template>
+          </div>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      expect(container.querySelector('#s')?.textContent).toBe('inner');
+    });
+  });
+
+  describe('x-model modifiers', () => {
+    it('x-model.lazy should update on change event not input event', async () => {
+      container.innerHTML = `
+        <div x-data="{ name: '' }">
+          <input type="text" x-model.lazy="name">
+          <span x-text="name"></span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const input = container.querySelector('input') as HTMLInputElement;
+      const span = container.querySelector('span')!;
+
+      input.value = 'typing...';
+      input.dispatchEvent(new Event('input'));
+      await Promise.resolve();
+      // input event should NOT update model with .lazy
+      expect(span.textContent).toBe('');
+
+      input.dispatchEvent(new Event('change'));
+      await Promise.resolve();
+      expect(span.textContent).toBe('typing...');
+    });
+
+    it('x-model.trim should trim whitespace from text input', async () => {
+      container.innerHTML = `
+        <div x-data="{ name: '' }">
+          <input type="text" x-model.trim="name">
+          <span x-text="name"></span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const input = container.querySelector('input') as HTMLInputElement;
+      const span = container.querySelector('span')!;
+
+      input.value = '  hello  ';
+      input.dispatchEvent(new Event('input'));
+      await Promise.resolve();
+
+      expect(span.textContent).toBe('hello');
+    });
+
+    it('x-model.number should coerce text input value to number', async () => {
+      container.innerHTML = `
+        <div x-data="{ age: 0 }">
+          <input type="text" x-model.number="age">
+          <span x-text="typeof age + ':' + age"></span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const input = container.querySelector('input') as HTMLInputElement;
+      const span = container.querySelector('span')!;
+
+      input.value = '25';
+      input.dispatchEvent(new Event('input'));
+      await Promise.resolve();
+
+      expect(span.textContent).toBe('number:25');
+    });
+  });
+
+  describe('$el magic variable', () => {
+    it('should expose $el as the current host element in x-text', async () => {
+      container.innerHTML = `
+        <div x-data="{}">
+          <span id="s" x-text="$el.id"></span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      expect(container.querySelector('#s')?.textContent).toBe('s');
+    });
+
+    it('should expose $el in @click handler', async () => {
+      container.innerHTML = `
+        <div x-data="{ tag: '' }">
+          <button @click="tag = $el.tagName.toLowerCase()">click</button>
+          <span x-text="tag"></span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      container.querySelector('button')?.click();
+      await Promise.resolve();
+
+      expect(container.querySelector('span')?.textContent).toBe('button');
+    });
+
+    it('should expose $el in :class binding', async () => {
+      container.innerHTML = `
+        <div x-data="{}">
+          <button :class="{ 'is-button': $el.tagName === 'BUTTON' }">btn</button>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      expect(container.querySelector('button')?.classList.contains('is-button')).toBe(true);
+    });
+  });
+
+  describe('$dispatch magic', () => {
+    it('should dispatch a custom event that bubbles up', async () => {
+      container.innerHTML = `
+        <div x-data="{}">
+          <button @click="$dispatch('my-event', { value: 42 })">fire</button>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      let received: CustomEvent | null = null;
+      container.addEventListener('my-event', (e) => { received = e as CustomEvent; });
+
+      container.querySelector('button')?.click();
+      await Promise.resolve();
+
+      expect(received).not.toBeNull();
+      expect((received as CustomEvent).detail).toEqual({ value: 42 });
+    });
+  });
+
+  describe('$nextTick magic', () => {
+    it('should expose $nextTick as a function returning a Promise', async () => {
+      container.innerHTML = `
+        <div x-data="{ done: false }">
+          <button @click="$nextTick().then(() => { done = true })">go</button>
+          <span x-text="done"></span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      container.querySelector('button')?.click();
+      await new Promise(r => setTimeout(r, 0));
+
+      expect(container.querySelector('span')?.textContent).toBe('true');
+    });
+  });
+
+  describe('x-for with "of" keyword', () => {
+    it('should support "of" as alias for "in" in x-for', async () => {
+      container.innerHTML = `
+        <div x-data="{ items: ['A', 'B', 'C'] }">
+          <template x-for="item of items" :key="item">
+            <span class="item" x-text="item"></span>
+          </template>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const items = container.querySelectorAll('.item');
+      expect(items.length).toBe(3);
+      expect(items[0].textContent).toBe('A');
+      expect(items[1].textContent).toBe('B');
+      expect(items[2].textContent).toBe('C');
+    });
+  });
 });
