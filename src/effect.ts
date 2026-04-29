@@ -49,8 +49,4 @@ export function effect(callback: EffectFn): () => void {
   };
 }
 
-export function batch(fn: () => void): void {
-  // Simple batch - just run the function
-  // The effect system already batches via microtask
-  fn();
-}
+

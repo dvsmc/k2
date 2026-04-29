@@ -1619,4 +1619,265 @@ describe('K2 Directives', () => {
       expect(items[2].textContent).toBe('C');
     });
   });
+
+  // ─── Additional coverage ─────────────────────────────────────────────────────
+
+  describe('K2 exports', () => {
+    it('should export a version string', () => {
+      expect(typeof K2.version).toBe('string');
+      expect(K2.version.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('x-data init() lifecycle hook', () => {
+    it('should call init() once after the scope is created', async () => {
+      let called = 0;
+      // Expose a side-effectful function accessible from the expression context
+      (window as unknown as Record<string, unknown>).trackInit = () => called++;
+
+      container.innerHTML = `
+        <div x-data="{ init() { trackInit(); } }">
+          <span>content</span>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      expect(called).toBe(1);
+      delete (window as unknown as Record<string, unknown>).trackInit;
+    });
+
+    it('should allow init() to set reactive data', async () => {
+      container.innerHTML = `
+        <div x-data="{ msg: '', init() { this.msg = 'ready'; } }">
+          <span x-text="msg"></span>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      expect(container.querySelector('span')?.textContent).toBe('ready');
+    });
+  });
+
+  describe('non-arrow function in x-data computed', () => {
+    it('should support regular function() syntax for computed properties', async () => {
+      container.innerHTML = `
+        <div x-data="{ count: 4, doubled: function() { return count * 2; } }">
+          <span x-text="doubled"></span>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      expect(container.querySelector('span')?.textContent).toBe('8');
+    });
+  });
+
+  describe('event modifiers', () => {
+    it('.once should fire the handler only on the first event', async () => {
+      container.innerHTML = `
+        <div x-data="{ count: 0 }">
+          <button @click.once="count++">click</button>
+          <span x-text="count"></span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const btn = container.querySelector('button')!;
+      const span = container.querySelector('span')!;
+
+      btn.click(); await Promise.resolve();
+      expect(span.textContent).toBe('1');
+
+      btn.click(); await Promise.resolve();
+      // Should still be 1 — listener was removed after first fire
+      expect(span.textContent).toBe('1');
+    });
+
+    it('.self should only fire when the event target is the element itself', async () => {
+      container.innerHTML = `
+        <div x-data="{ count: 0 }">
+          <div id="outer" @click.self="count++">
+            <button id="inner">click</button>
+          </div>
+          <span x-text="count"></span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const inner = container.querySelector('#inner')!;
+      const outer = container.querySelector('#outer')!;
+      const span = container.querySelector('span')!;
+
+      // Click inner button — event bubbles to outer, but target !== outer → should not count
+      inner.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      expect(span.textContent).toBe('0');
+
+      // Click directly on outer — target === outer → should count
+      outer.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      expect(span.textContent).toBe('1');
+    });
+
+    it('.enter key modifier should only fire on Enter key', async () => {
+      container.innerHTML = `
+        <div x-data="{ count: 0 }">
+          <input @keydown.enter="count++">
+          <span x-text="count"></span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const input = container.querySelector('input')!;
+      const span = container.querySelector('span')!;
+
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+      await Promise.resolve();
+      expect(span.textContent).toBe('0'); // not Enter → no increment
+
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await Promise.resolve();
+      expect(span.textContent).toBe('1');
+    });
+  });
+
+  describe('x-show original display restoration', () => {
+    it('should restore a pre-existing inline display value when shown again', async () => {
+      container.innerHTML = `
+        <div x-data="{ show: true }">
+          <div id="box" style="display: flex;" x-show="show">content</div>
+          <button @click="show = !show">toggle</button>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const box = container.querySelector('#box') as HTMLElement;
+      expect(box.style.display).toBe('flex');
+
+      container.querySelector('button')?.click();
+      await Promise.resolve();
+      expect(box.style.display).toBe('none');
+
+      container.querySelector('button')?.click();
+      await Promise.resolve();
+      expect(box.style.display).toBe('flex');
+    });
+  });
+
+  describe(':style string binding', () => {
+    it('should apply a string value directly as the style attribute', async () => {
+      container.innerHTML = `
+        <div x-data="{ color: 'red' }">
+          <span :style="'color: ' + color + '; font-weight: bold'">text</span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const span = container.querySelector('span') as HTMLElement;
+      expect(span.getAttribute('style')).toBe('color: red; font-weight: bold');
+    });
+  });
+
+  describe('combined x-model modifiers', () => {
+    it('x-model.lazy.number should update on change and coerce to number', async () => {
+      container.innerHTML = `
+        <div x-data="{ val: 0 }">
+          <input type="text" x-model.lazy.number="val">
+          <span x-text="typeof val + ':' + val"></span>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const input = container.querySelector('input') as HTMLInputElement;
+      const span = container.querySelector('span')!;
+
+      input.value = '42';
+      input.dispatchEvent(new Event('input')); // input event — should be ignored (.lazy)
+      await Promise.resolve();
+      expect(span.textContent).toBe('number:0'); // no change yet
+
+      input.dispatchEvent(new Event('change')); // change event — should fire
+      await Promise.resolve();
+      expect(span.textContent).toBe('number:42');
+    });
+  });
+
+  describe('x-if with x-for inside', () => {
+    it('should render x-for items inside x-if content when condition is true', async () => {
+      container.innerHTML = `
+        <div x-data="{ show: true, items: ['A', 'B', 'C'] }">
+          <template x-if="show">
+            <div id="wrapper">
+              <template x-for="item in items" :key="item">
+                <span class="item" x-text="item"></span>
+              </template>
+            </div>
+          </template>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      const items = container.querySelectorAll('.item');
+      expect(items.length).toBe(3);
+      expect(items[0].textContent).toBe('A');
+      expect(items[2].textContent).toBe('C');
+    });
+
+    it('should remove x-for items when x-if becomes false', async () => {
+      container.innerHTML = `
+        <div x-data="{ show: true, items: ['A', 'B'] }">
+          <button @click="show = false">hide</button>
+          <template x-if="show">
+            <div>
+              <template x-for="item in items" :key="item">
+                <span class="item" x-text="item"></span>
+              </template>
+            </div>
+          </template>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      expect(container.querySelectorAll('.item').length).toBe(2);
+
+      container.querySelector('button')?.click();
+      await Promise.resolve();
+
+      expect(container.querySelectorAll('.item').length).toBe(0);
+    });
+  });
+
+  describe('$dispatch without detail', () => {
+    it('should dispatch custom event with undefined detail when no detail passed', async () => {
+      container.innerHTML = `
+        <div x-data="{}">
+          <button @click="$dispatch('ping')">fire</button>
+        </div>
+      `;
+      K2.init(container);
+      await Promise.resolve();
+
+      let received: CustomEvent | null = null;
+      container.addEventListener('ping', (e) => { received = e as CustomEvent; });
+
+      container.querySelector('button')?.click();
+      await Promise.resolve();
+
+      expect(received).not.toBeNull();
+      expect((received as CustomEvent).type).toBe('ping');
+    });
+  });
 });
