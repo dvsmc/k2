@@ -748,4 +748,230 @@ describe('K2 Directives', () => {
       expect(items[2]).toBe(elementB);
     });
   });
+
+  describe('Nested x-data scope chain', () => {
+    it('should read parent scope variables from nested x-data', async () => {
+      container.innerHTML = `
+        <div x-data="{ outer: 'hello' }">
+          <div x-data="{ inner: 'world' }">
+            <span id="s1" x-text="outer"></span>
+            <span id="s2" x-text="inner"></span>
+          </div>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      expect(container.querySelector('#s1')?.textContent).toBe('hello');
+      expect(container.querySelector('#s2')?.textContent).toBe('world');
+    });
+
+    it('should write to parent scope signal from nested x-data @click', async () => {
+      container.innerHTML = `
+        <div x-data="{ count: 0 }">
+          <div x-data="{ step: 2 }">
+            <button @click="count += step">Add</button>
+          </div>
+          <span x-text="count"></span>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      const button = container.querySelector('button');
+      const span = container.querySelector('span');
+
+      expect(span?.textContent).toBe('0');
+      button?.click();
+      await Promise.resolve();
+      expect(span?.textContent).toBe('2');
+    });
+
+    it('should bind x-model in nested x-data to parent scope signal', async () => {
+      container.innerHTML = `
+        <div x-data="{ name: 'Alice' }">
+          <div x-data="{ label: 'Name' }">
+            <input type="text" x-model="name">
+          </div>
+          <span x-text="name"></span>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      const input = container.querySelector('input') as HTMLInputElement;
+      const span = container.querySelector('span');
+
+      expect(input?.value).toBe('Alice');
+
+      input.value = 'Bob';
+      input.dispatchEvent(new Event('input'));
+      await Promise.resolve();
+
+      expect(span?.textContent).toBe('Bob');
+    });
+
+    it('should support x-show in nested x-data using parent scope variable', async () => {
+      container.innerHTML = `
+        <div x-data="{ visible: true }">
+          <div x-data="{ label: 'test' }">
+            <span x-show="visible">Content</span>
+          </div>
+          <button @click="visible = false">Hide</button>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      const span = container.querySelector('span') as HTMLElement;
+      const button = container.querySelector('button');
+
+      expect(span?.style.display).not.toBe('none');
+
+      button?.click();
+      await Promise.resolve();
+
+      expect(span?.style.display).toBe('none');
+    });
+
+    it('should access parent scope from computed in nested x-data', async () => {
+      container.innerHTML = `
+        <div x-data="{ base: 10 }">
+          <div x-data="{ multiplier: 3, result: () => base * multiplier }">
+            <span x-text="result"></span>
+          </div>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      expect(container.querySelector('span')?.textContent).toBe('30');
+    });
+
+    it('should support x-for inside nested x-data with item variables', async () => {
+      container.innerHTML = `
+        <div x-data="{ title: 'List' }">
+          <div x-data="{ items: ['A', 'B', 'C'] }">
+            <template x-for="item in items" :key="item">
+              <span class="item" x-text="item"></span>
+            </template>
+          </div>
+          <span id="title" x-text="title"></span>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      const items = container.querySelectorAll('.item');
+      expect(items.length).toBe(3);
+      expect(items[0].textContent).toBe('A');
+      expect(items[1].textContent).toBe('B');
+      expect(items[2].textContent).toBe('C');
+      expect(container.querySelector('#title')?.textContent).toBe('List');
+    });
+
+    it('should support x-model inside x-for inside nested x-data bound to ancestor scope (radio button scenario)', async () => {
+      container.innerHTML = `
+        <div x-data="{ active: 'radio2', plan: 'asd' }">
+          <div x-data="{
+            radios: [
+              { title: 'Radio 1', value: 'radio1' },
+              { title: 'Radio 2', value: 'radio2' }
+            ]
+          }">
+            <template x-for="radio in radios" :key="radio.value">
+              <label>
+                <span class="title" x-text="radio.title"></span>
+                <input
+                  type="radio"
+                  name="radios"
+                  :id="radio.value"
+                  :value="radio.value"
+                  x-model="active"
+                />
+              </label>
+            </template>
+          </div>
+          <span id="active" x-text="active"></span>
+          <input type="text" id="plan" x-model="plan">
+          <span id="plan-text" x-text="plan"></span>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      // Labels and spans should be rendered from x-for
+      const titles = container.querySelectorAll('.title');
+      expect(titles.length).toBe(2);
+      expect(titles[0].textContent).toBe('Radio 1');
+      expect(titles[1].textContent).toBe('Radio 2');
+
+      // Radio input ids/values should be bound
+      const radio1 = container.querySelector('#radio1') as HTMLInputElement;
+      const radio2 = container.querySelector('#radio2') as HTMLInputElement;
+      expect(radio1).not.toBeNull();
+      expect(radio2).not.toBeNull();
+      expect(radio1.value).toBe('radio1');
+      expect(radio2.value).toBe('radio2');
+
+      // Initial active = 'radio2'
+      expect(container.querySelector('#active')?.textContent).toBe('radio2');
+      expect(radio1.checked).toBe(false);
+      expect(radio2.checked).toBe(true);
+
+      // Click radio1 — should update parent scope's `active`
+      radio1.checked = true;
+      radio1.dispatchEvent(new Event('change'));
+      await Promise.resolve();
+
+      expect(container.querySelector('#active')?.textContent).toBe('radio1');
+      expect(radio1.checked).toBe(true);
+      expect(radio2.checked).toBe(false);
+
+      // x-model on outer scope text input should still work
+      const planInput = container.querySelector('#plan') as HTMLInputElement;
+      expect(planInput.value).toBe('asd');
+      planInput.value = 'newplan';
+      planInput.dispatchEvent(new Event('input'));
+      await Promise.resolve();
+      expect(container.querySelector('#plan-text')?.textContent).toBe('newplan');
+    });
+
+    it('should not process nested x-data children with outer scope on re-init', async () => {
+      container.innerHTML = `
+        <div x-data="{ outer: 'yes' }">
+          <div x-data="{ items: ['A', 'B'] }">
+            <template x-for="item in items" :key="item">
+              <span class="item" x-text="item"></span>
+            </template>
+          </div>
+        </div>
+      `;
+
+      // First init
+      K2.init(container);
+      await Promise.resolve();
+
+      let items = container.querySelectorAll('.item');
+      expect(items.length).toBe(2);
+
+      // Second init (simulates Livewire/framework re-initialization)
+      // Should not produce errors or double-process x-for items
+      K2.init(container);
+      await Promise.resolve();
+
+      // Items should still be correct (not doubled or errored)
+      items = container.querySelectorAll('.item');
+      expect(items.length).toBe(2);
+      expect(items[0].textContent).toBe('A');
+      expect(items[1].textContent).toBe('B');
+    });
+  });
 });
