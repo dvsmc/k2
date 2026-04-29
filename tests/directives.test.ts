@@ -430,6 +430,28 @@ describe('K2 Directives', () => {
 
       expect(span?.textContent).toBe('4');
     });
+
+    it('should support computed referencing another computed', async () => {
+      container.innerHTML = `
+        <div x-data="{ a: 2, doubled: () => a * 2, quadrupled: () => doubled * 2 }">
+          <span x-text="quadrupled"></span>
+          <button @click="a++">+</button>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      const span = container.querySelector('span');
+      const button = container.querySelector('button');
+
+      expect(span?.textContent).toBe('8');
+
+      button?.click();
+      await Promise.resolve();
+
+      expect(span?.textContent).toBe('12');
+    });
   });
 
   describe('x-for', () => {
@@ -638,6 +660,60 @@ describe('K2 Directives', () => {
 
       items = container.querySelectorAll('.item');
       expect(items.length).toBe(0);
+    });
+
+    it('should iterate over an object (entries)', async () => {
+      container.innerHTML = `
+        <div x-data="{ user: { name: 'Alice', age: 30 } }">
+          <template x-for="(entry, index) in user" :key="index">
+            <div class="entry" x-text="entry[0] + ':' + entry[1]"></div>
+          </template>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      const entries = container.querySelectorAll('.entry');
+      expect(entries.length).toBe(2);
+      expect(entries[0].textContent).toBe('name:Alice');
+      expect(entries[1].textContent).toBe('age:30');
+    });
+
+    it('should iterate over a number (range)', async () => {
+      container.innerHTML = `
+        <div x-data="{ count: 3 }">
+          <template x-for="i in count" :key="i">
+            <div class="num" x-text="i"></div>
+          </template>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      const nums = container.querySelectorAll('.num');
+      expect(nums.length).toBe(3);
+      expect(nums[0].textContent).toBe('1');
+      expect(nums[1].textContent).toBe('2');
+      expect(nums[2].textContent).toBe('3');
+    });
+
+    it('should support x-model inside x-for', async () => {
+      container.innerHTML = `
+        <div x-data="{ items: [{ id: 1, name: 'A' }] }">
+          <template x-for="item in items" :key="item.id">
+            <input class="inp" x-model="item.name" type="text">
+          </template>
+          <span x-text="items[0].name"></span>
+        </div>
+      `;
+
+      K2.init(container);
+      await new Promise(r => setTimeout(r, 0));
+
+      const input = container.querySelector('.inp') as HTMLInputElement;
+      expect(input?.value).toBe('A');
     });
 
     it('should swap rows efficiently', async () => {
