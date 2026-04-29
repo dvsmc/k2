@@ -107,6 +107,77 @@ function mkExec(stmt: string, wc: string): ExecFn {
   return new Function('s', '$event', `${wc}{${stmt}}`) as ExecFn;
 }
 
+// Perform an immutable deep-set on a plain object/array, returning a new root.
+// path is an array of string keys (no array-index support needed for x-model).
+function deepSet(obj: unknown, path: string[], value: unknown): unknown {
+  if (path.length === 0) return value;
+  const key = path[0];
+  const rest = path.slice(1);
+  if (Array.isArray(obj)) {
+    const idx = Number(key);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= obj.length) return obj;
+    const copy = [...obj];
+    copy[idx] = deepSet(copy[idx], rest, value);
+    return copy;
+  }
+  if (obj !== null && typeof obj === 'object') {
+    return { ...(obj as Record<string, unknown>), [key]: deepSet((obj as Record<string, unknown>)[key], rest, value) };
+  }
+  return obj;
+}
+
+// After updating a root signal, propagate the change into any parent-scope array signal
+// that contains the old item value (by reference). This ensures that x-for item property
+// mutations are reflected in the source array and therefore in any x-text bound to it.
+function propagateToParentArray(oldItem: unknown, newItem: unknown, parentScope: ComponentScope | undefined): void {
+  let cur = parentScope;
+  while (cur) {
+    for (const sig of Object.values(cur.signals)) {
+      const arr = sig.get();
+      if (Array.isArray(arr)) {
+        const idx = arr.findIndex((el: unknown) => el === oldItem);
+        if (idx !== -1) {
+          const newArr = [...arr];
+          newArr[idx] = newItem;
+          (sig as State<unknown>).set(newArr);
+          return;
+        }
+      }
+    }
+    cur = cur.parent;
+  }
+}
+
+// Try to update a dotted/bracketed expression like "item.name" or "obj.sub.prop"
+// by finding the root signal and applying an immutable update, returning true on success.
+// Also propagates the update into any parent-scope array containing the old item
+// so that x-for source arrays stay in sync.
+// Falls back to false so the caller can use mkExec as a last resort.
+const SIMPLE_PATH = /^[a-zA-Z_$][\w$]*(?:\.[\w$]+|\[\d+\])*$/;
+
+function trySignalSet(expr: string, v: unknown, scope: ComponentScope): boolean {
+  if (!SIMPLE_PATH.test(expr)) return false;
+  // Parse the expression into segments (identifiers or numeric indices)
+  const segments = expr.split(/\.|\[(\d+)\]/).filter(Boolean);
+  if (segments.length < 2) return false;
+  const rootKey = segments[0];
+  const path = segments.slice(1);
+
+  let cur: ComponentScope | undefined = scope;
+  while (cur) {
+    if (rootKey in cur.signals) {
+      const current = cur.signals[rootKey].get();
+      const updated = deepSet(current, path, v);
+      cur.signals[rootKey].set(updated);
+      // Keep parent arrays in sync so x-text on items[i].prop also updates
+      propagateToParentArray(current, updated, cur.parent);
+      return true;
+    }
+    cur = cur.parent;
+  }
+  return false;
+}
+
 // Extract the body of an arrow or regular function for use inside a with-statement.
 function extractFnBody(fn: Function): string {
   const s = fn.toString();
@@ -246,7 +317,7 @@ function processElement(el: Element, scope: ComponentScope): () => void {
         else if (input.type === 'number' || input.type === 'range') v = input.valueAsNumber;
         else v = input.value;
         if (value in scope.signals) scope.set(value, v);
-        else {
+        else if (!trySignalSet(value, v, scope)) {
           try { mkExec(`${value}=${JSON.stringify(v)}`, wc)(scope); }
           catch (e) { console.error(`x-model set error: ${value}`, e); }
         }

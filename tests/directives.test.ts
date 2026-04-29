@@ -282,6 +282,62 @@ describe('K2 Directives', () => {
 
       expect(span?.textContent).toBe('10');
     });
+
+    it('should work with radio buttons', async () => {
+      container.innerHTML = `
+        <div x-data="{ color: 'red' }">
+          <input type="radio" name="color" value="red" x-model="color" id="r1">
+          <input type="radio" name="color" value="blue" x-model="color" id="r2">
+          <span x-text="color"></span>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      const r1 = container.querySelector('#r1') as HTMLInputElement;
+      const r2 = container.querySelector('#r2') as HTMLInputElement;
+      const span = container.querySelector('span');
+
+      expect(r1.checked).toBe(true);
+      expect(r2.checked).toBe(false);
+      expect(span?.textContent).toBe('red');
+
+      r2.checked = true;
+      r2.dispatchEvent(new Event('change'));
+      await Promise.resolve();
+
+      expect(span?.textContent).toBe('blue');
+      expect(r1.checked).toBe(false);
+      expect(r2.checked).toBe(true);
+    });
+
+    it('should work with select element', async () => {
+      container.innerHTML = `
+        <div x-data="{ plan: 'basic' }">
+          <select x-model="plan">
+            <option value="basic">Basic</option>
+            <option value="pro">Pro</option>
+          </select>
+          <span x-text="plan"></span>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      const select = container.querySelector('select') as HTMLSelectElement;
+      const span = container.querySelector('span');
+
+      expect(select.value).toBe('basic');
+      expect(span?.textContent).toBe('basic');
+
+      select.value = 'pro';
+      select.dispatchEvent(new Event('change'));
+      await Promise.resolve();
+
+      expect(span?.textContent).toBe('pro');
+    });
   });
 
   describe('x-on / @', () => {
@@ -699,7 +755,7 @@ describe('K2 Directives', () => {
       expect(nums[2].textContent).toBe('3');
     });
 
-    it('should support x-model inside x-for', async () => {
+    it('should support x-model inside x-for with reactive write-back', async () => {
       container.innerHTML = `
         <div x-data="{ items: [{ id: 1, name: 'A' }] }">
           <template x-for="item in items" :key="item.id">
@@ -713,7 +769,41 @@ describe('K2 Directives', () => {
       await new Promise(r => setTimeout(r, 0));
 
       const input = container.querySelector('.inp') as HTMLInputElement;
+      const span = container.querySelector('span');
+
       expect(input?.value).toBe('A');
+      expect(span?.textContent).toBe('A');
+
+      // Simulate user typing — should trigger reactive update
+      input.value = 'Z';
+      input.dispatchEvent(new Event('input'));
+      await new Promise(r => setTimeout(r, 0));
+
+      expect(span?.textContent).toBe('Z');
+    });
+
+    it('should support nested x-for (x-for inside x-for)', async () => {
+      container.innerHTML = `
+        <div x-data="{ rows: [{ id: 1, cols: ['a', 'b'] }, { id: 2, cols: ['c', 'd'] }] }">
+          <template x-for="row in rows" :key="row.id">
+            <div class="row">
+              <template x-for="col in row.cols" :key="col">
+                <span class="col" x-text="col"></span>
+              </template>
+            </div>
+          </template>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      const cols = container.querySelectorAll('.col');
+      expect(cols.length).toBe(4);
+      expect(cols[0].textContent).toBe('a');
+      expect(cols[1].textContent).toBe('b');
+      expect(cols[2].textContent).toBe('c');
+      expect(cols[3].textContent).toBe('d');
     });
 
     it('should swap rows efficiently', async () => {
@@ -972,6 +1062,77 @@ describe('K2 Directives', () => {
       expect(items.length).toBe(2);
       expect(items[0].textContent).toBe('A');
       expect(items[1].textContent).toBe('B');
+    });
+
+    it('should support 3-level nested x-data scope chain', async () => {
+      container.innerHTML = `
+        <div x-data="{ level1: 'L1' }">
+          <div x-data="{ level2: 'L2' }">
+            <div x-data="{ level3: 'L3' }">
+              <span id="s1" x-text="level1"></span>
+              <span id="s2" x-text="level2"></span>
+              <span id="s3" x-text="level3"></span>
+            </div>
+          </div>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      expect(container.querySelector('#s1')?.textContent).toBe('L1');
+      expect(container.querySelector('#s2')?.textContent).toBe('L2');
+      expect(container.querySelector('#s3')?.textContent).toBe('L3');
+    });
+
+    it('should write to grandparent scope from 3-level nested @click', async () => {
+      container.innerHTML = `
+        <div x-data="{ count: 0 }">
+          <div x-data="{ step: 2 }">
+            <div x-data="{ label: 'Add' }">
+              <button @click="count += step">Add</button>
+            </div>
+          </div>
+          <span x-text="count"></span>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      const button = container.querySelector('button');
+      const span = container.querySelector('span');
+
+      expect(span?.textContent).toBe('0');
+      button?.click();
+      await Promise.resolve();
+      expect(span?.textContent).toBe('2');
+    });
+
+    it('should support x-model with deep property path (item.sub.value) inside x-for', async () => {
+      container.innerHTML = `
+        <div x-data="{ items: [{ id: 1, meta: { label: 'hello' } }] }">
+          <template x-for="item in items" :key="item.id">
+            <input class="inp" x-model="item.meta.label" type="text">
+          </template>
+          <span x-text="items[0].meta.label"></span>
+        </div>
+      `;
+
+      K2.init(container);
+      await new Promise(r => setTimeout(r, 0));
+
+      const input = container.querySelector('.inp') as HTMLInputElement;
+      const span = container.querySelector('span');
+
+      expect(input?.value).toBe('hello');
+      expect(span?.textContent).toBe('hello');
+
+      input.value = 'world';
+      input.dispatchEvent(new Event('input'));
+      await new Promise(r => setTimeout(r, 0));
+
+      expect(span?.textContent).toBe('world');
     });
   });
 });
