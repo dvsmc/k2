@@ -108,14 +108,17 @@ function mkExec(stmt: string, wc: string): ExecFn {
 }
 
 // Perform an immutable deep-set on a plain object/array, returning a new root.
-// path is an array of string keys (no array-index support needed for x-model).
+// Supports both property names and numeric array indices in the path.
 function deepSet(obj: unknown, path: string[], value: unknown): unknown {
   if (path.length === 0) return value;
   const key = path[0];
   const rest = path.slice(1);
   if (Array.isArray(obj)) {
     const idx = Number(key);
-    if (!Number.isInteger(idx) || idx < 0 || idx >= obj.length) return obj;
+    if (!Number.isInteger(idx) || idx < 0 || idx >= obj.length) {
+      console.warn(`x-model: array index ${key} is out of bounds (length ${obj.length})`);
+      return obj;
+    }
     const copy = [...obj];
     copy[idx] = deepSet(copy[idx], rest, value);
     return copy;
@@ -148,6 +151,26 @@ function propagateToParentArray(oldItem: unknown, newItem: unknown, parentScope:
   }
 }
 
+// Parse a simple dotted/bracket path expression into segments.
+// e.g. "item.name" → ["item","name"],  "arr[0].key" → ["arr","0","key"]
+function parsePath(expr: string): string[] | null {
+  const segments: string[] = [];
+  const re = /([a-zA-Z_$][\w$]*)|\[(\d+)\]/g;
+  let match: RegExpExecArray | null;
+  let lastIndex = 0;
+  while ((match = re.exec(expr)) !== null) {
+    if (match.index !== lastIndex && !(lastIndex === 0 && match.index === 0)) {
+      // gap between matches — only dots are allowed as separators
+      const gap = expr.slice(lastIndex, match.index).replace(/\./g, '');
+      if (gap.length > 0) return null; // unexpected characters
+    }
+    segments.push(match[1] ?? match[2]);
+    lastIndex = re.lastIndex;
+  }
+  if (lastIndex !== expr.length) return null;
+  return segments;
+}
+
 // Try to update a dotted/bracketed expression like "item.name" or "obj.sub.prop"
 // by finding the root signal and applying an immutable update, returning true on success.
 // Also propagates the update into any parent-scope array containing the old item
@@ -157,9 +180,8 @@ const SIMPLE_PATH = /^[a-zA-Z_$][\w$]*(?:\.[\w$]+|\[\d+\])*$/;
 
 function trySignalSet(expr: string, v: unknown, scope: ComponentScope): boolean {
   if (!SIMPLE_PATH.test(expr)) return false;
-  // Parse the expression into segments (identifiers or numeric indices)
-  const segments = expr.split(/\.|\[(\d+)\]/).filter(Boolean);
-  if (segments.length < 2) return false;
+  const segments = parsePath(expr);
+  if (!segments || segments.length < 2) return false;
   const rootKey = segments[0];
   const path = segments.slice(1);
 
