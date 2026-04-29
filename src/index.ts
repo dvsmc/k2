@@ -765,7 +765,7 @@ function processModelDirective(el: Element, expr: string, scope: ComponentScope)
     if (input.type === 'checkbox') {
       newValue = (input as HTMLInputElement).checked;
     } else if (input.type === 'number' || input.type === 'range') {
-      newValue = input.valueAsNumber;
+      newValue = (input as HTMLInputElement).valueAsNumber;
     } else {
       newValue = input.value;
     }
