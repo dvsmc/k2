@@ -904,6 +904,36 @@ describe('K2 Directives', () => {
       expect(span?.textContent).toBe('Bob');
     });
 
+    it('should correctly write NaN from number input x-model bound to parent scope variable', async () => {
+      // JSON.stringify(NaN) === 'null', so the mkExec fallback used to corrupt NaN into null
+      // when the model variable lives in a parent scope (not the immediate scope).
+      container.innerHTML = `
+        <div x-data="{ outer: 5 }">
+          <div x-data="{ inner: 1 }">
+            <input type="number" id="inp" x-model="outer">
+          </div>
+          <span x-text="String(outer)"></span>
+        </div>
+      `;
+
+      K2.init(container);
+      await Promise.resolve();
+
+      const input = container.querySelector('#inp') as HTMLInputElement;
+      const span = container.querySelector('span');
+
+      expect(input?.value).toBe('5');
+      expect(span?.textContent).toBe('5');
+
+      // Simulate entering an invalid number → valueAsNumber is NaN
+      input.value = 'abc';
+      input.dispatchEvent(new Event('input'));
+      await Promise.resolve();
+
+      // Should propagate NaN (not null) to the parent scope
+      expect(span?.textContent).toBe('NaN');
+    });
+
     it('should support x-show in nested x-data using parent scope variable', async () => {
       container.innerHTML = `
         <div x-data="{ visible: true }">

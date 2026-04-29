@@ -171,8 +171,11 @@ function parsePath(expr: string): string[] | null {
   return segments;
 }
 
-// Try to update a dotted/bracketed expression like "item.name" or "obj.sub.prop"
-// by finding the root signal and applying an immutable update, returning true on success.
+// Try to update a simple or dotted/bracketed path expression like "active", "item.name",
+// or "obj.sub.prop" by finding the root signal and applying an update, returning true on success.
+// Simple identifiers (e.g. "active") are resolved through the full scope chain via scope.set,
+// which correctly handles parent-scope variables without JSON.stringify corruption (NaN→null etc.).
+// Dotted/bracketed paths find the root signal and apply an immutable deep-set.
 // Also propagates the update into any parent-scope array containing the old item
 // so that x-for source arrays stay in sync.
 // Falls back to false so the caller can use mkExec as a last resort.
@@ -181,7 +184,15 @@ const SIMPLE_PATH = /^[a-zA-Z_$][\w$]*(?:\.[\w$]+|\[\d+\])*$/;
 function trySignalSet(expr: string, v: unknown, scope: ComponentScope): boolean {
   if (!SIMPLE_PATH.test(expr)) return false;
   const segments = parsePath(expr);
-  if (!segments || segments.length < 2) return false;
+  if (!segments || segments.length === 0) return false;
+
+  // Simple identifier — delegate through the scope chain (handles parent scopes and avoids
+  // JSON.stringify which corrupts non-serialisable values like NaN).
+  if (segments.length === 1) {
+    scope.set(segments[0], v);
+    return true;
+  }
+
   const rootKey = segments[0];
   const path = segments.slice(1);
 
@@ -338,8 +349,7 @@ function processElement(el: Element, scope: ComponentScope): () => void {
         if (input.type === 'checkbox') v = input.checked;
         else if (input.type === 'number' || input.type === 'range') v = input.valueAsNumber;
         else v = input.value;
-        if (value in scope.signals) scope.set(value, v);
-        else if (!trySignalSet(value, v, scope)) {
+        if (!trySignalSet(value, v, scope)) {
           try { mkExec(`${value}=${JSON.stringify(v)}`, wc)(scope); }
           catch (e) { console.error(`x-model set error: ${value}`, e); }
         }
@@ -517,7 +527,11 @@ function processForDirective(template: HTMLTemplateElement, parentScope: Compone
     try {
       const items = toIterable(evalItems(parentScope));
       if (!items) { console.error(`x-for: "${arrayExpr}" must be array, object, or number`); return; }
-      reconcile(items);
+      // Reconcile in an untracked context so that effects created for each item (x-model,
+      // x-text, etc.) are NOT registered as dependencies of this outer x-for computed.
+      // Without untrack, any signal those inner effects depend on would also trigger a full
+      // x-for re-reconcile, even when only a single item's binding needs to update.
+      untrack(() => reconcile(items));
     } catch (e) {
       console.error(`x-for error: ${arrayExpr}`, e);
     }
