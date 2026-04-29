@@ -47,6 +47,8 @@ const D_BIND = 'x-bind:';
 const D_MODEL = 'x-model';
 const D_ON = 'x-on:';
 const D_FOR = 'x-for';
+const D_IF = 'x-if';
+const D_CLOAK = 'x-cloak';
 
 // WeakMap to store initialized component scopes keyed by their root element.
 // Avoids attaching arbitrary properties to DOM nodes and provides proper type safety.
@@ -59,7 +61,7 @@ interface ForExpression {
 }
 
 function parseForExpression(expr: string): ForExpression | null {
-  const m = expr.match(/^\s*(?:\(\s*(\w+)\s*,\s*(\w+)\s*\)|(\w+))\s+in\s+(.+)\s*$/);
+  const m = expr.match(/^\s*(?:\(\s*(\w+)\s*,\s*(\w+)\s*\)|(\w+))\s+(?:in|of)\s+(.+)\s*$/);
   if (!m) return null;
   return { itemName: m[3] || m[1], indexName: m[2] || null, arrayExpr: m[4].trim() };
 }
@@ -96,15 +98,22 @@ function buildWithCode(scope: ComponentScope): string {
 
 // Build pre-compiled eval / exec functions for a fixed scope structure.
 // Using pre-built fns avoids re-creating Function objects on every effect run.
-type EvalFn = (s: ComponentScope) => unknown;
-type ExecFn = (s: ComponentScope, e?: Event) => void;
+// $el: current host element; $dispatch: CustomEvent helper; $nextTick: microtask promise.
+type EvalFn = (s: ComponentScope, $el?: Element) => unknown;
+type ExecFn = (s: ComponentScope, $event: Event | undefined, $el?: Element) => void;
+
+// Magic variable preamble injected into every generated function body.
+// Must be placed BEFORE the with() block so that with() doesn't shadow these names.
+const MAGIC_PREAMBLE =
+  `const $dispatch=(ev,d)=>$el&&$el.dispatchEvent(new CustomEvent(ev,{detail:d,bubbles:true,composed:true}));` +
+  `const $nextTick=()=>Promise.resolve();`;
 
 function mkEval(expr: string, wc: string): EvalFn {
-  return new Function('s', `${wc}{return(${expr})}`) as EvalFn;
+  return new Function('s', '$el', `${MAGIC_PREAMBLE}${wc}{return(${expr})}`) as EvalFn;
 }
 
 function mkExec(stmt: string, wc: string): ExecFn {
-  return new Function('s', '$event', `${wc}{${stmt}}`) as ExecFn;
+  return new Function('s', '$event', '$el', `${MAGIC_PREAMBLE}${wc}{${stmt}}`) as ExecFn;
 }
 
 // Perform an immutable deep-set on a plain object/array, returning a new root.
@@ -308,18 +317,21 @@ function processElement(el: Element, scope: ComponentScope): () => void {
   const cleanups: (() => void)[] = [];
   const wc = buildWithCode(scope); // pre-build once for all attrs on this element
 
+  // x-cloak: remove after processing so CSS `[x-cloak]{display:none}` hides until ready
+  if (el.hasAttribute(D_CLOAK)) el.removeAttribute(D_CLOAK);
+
   for (const { name, value } of Array.from(el.attributes)) {
     if (name === D_TEXT) {
       const fn = mkEval(value, wc);
       cleanups.push(effect(() => {
-        try { el.textContent = String(fn(scope) ?? ''); }
+        try { el.textContent = String(fn(scope, el) ?? ''); }
         catch (e) { console.error(`x-text error: ${value}`, e); }
       }));
 
     } else if (name === D_HTML) {
       const fn = mkEval(value, wc);
       cleanups.push(effect(() => {
-        try { el.innerHTML = String(fn(scope) ?? ''); }
+        try { el.innerHTML = String(fn(scope, el) ?? ''); }
         catch (e) { console.error(`x-html error: ${value}`, e); }
       }));
 
@@ -327,30 +339,43 @@ function processElement(el: Element, scope: ComponentScope): () => void {
       const orig = (el as HTMLElement).style.display || '';
       const fn = mkEval(value, wc);
       cleanups.push(effect(() => {
-        try { (el as HTMLElement).style.display = fn(scope) ? orig : 'none'; }
+        try { (el as HTMLElement).style.display = fn(scope, el) ? orig : 'none'; }
         catch (e) { console.error(`x-show error: ${value}`, e); }
       }));
 
-    } else if (name === D_MODEL) {
+    } else if (name === D_MODEL || name.startsWith(`${D_MODEL}.`)) {
       const input = el as HTMLInputElement;
+      // Modifiers are encoded in the attribute name, e.g. x-model.lazy.trim="expr"
+      const modStr = name.slice(D_MODEL.length); // '' | '.lazy' | '.lazy.trim' etc.
+      const mods = new Set(modStr ? modStr.slice(1).split('.') : []);
+      const isLazy = mods.has('lazy');
+      const isTrim = mods.has('trim');
+      const isNumber = mods.has('number');
+
       const fn = mkEval(value, wc);
       cleanups.push(effect(() => {
         try {
-          const v = fn(scope);
+          const v = fn(scope, el);
           if (input.type === 'checkbox') input.checked = Boolean(v);
           else if (input.type === 'radio') input.checked = input.value === String(v);
           else input.value = String(v ?? '');
         } catch (e) { console.error(`x-model error: ${value}`, e); }
       }));
-      const evt = input.tagName === 'SELECT' || input.type === 'checkbox' || input.type === 'radio'
+      const baseEvt = input.tagName === 'SELECT' || input.type === 'checkbox' || input.type === 'radio'
         ? 'change' : 'input';
+      const evt = isLazy ? 'change' : baseEvt;
       const handler = () => {
         let v: unknown;
         if (input.type === 'checkbox') v = input.checked;
         else if (input.type === 'number' || input.type === 'range') v = input.valueAsNumber;
-        else v = input.value;
+        else {
+          const raw = input.value;
+          if (isNumber) { const n = parseFloat(raw); v = isNaN(n) ? raw : n; }
+          else if (isTrim) v = raw.trim();
+          else v = raw;
+        }
         if (!trySignalSet(value, v, scope)) {
-          try { mkExec(`${value}=${JSON.stringify(v)}`, wc)(scope); }
+          try { mkExec(`${value}=${JSON.stringify(v)}`, wc)(scope, undefined, el); }
           catch (e) { console.error(`x-model set error: ${value}`, e); }
         }
       };
@@ -360,26 +385,77 @@ function processElement(el: Element, scope: ComponentScope): () => void {
     } else if (name.startsWith(D_BIND) || name.startsWith(':')) {
       const attr = name.startsWith(':') ? name.slice(1) : name.slice(D_BIND.length);
       const fn = mkEval(value, wc);
-      cleanups.push(effect(() => {
-        try {
-          const v = fn(scope);
-          if (attr === 'class') {
-            if (v !== null && typeof v === 'object') {
-              for (const [cls, on] of Object.entries(v)) el.classList.toggle(cls, Boolean(on));
-            } else el.setAttribute('class', String(v ?? ''));
-          } else if (attr === 'style') {
-            if (v !== null && typeof v === 'object') {
-              for (const [p, pv] of Object.entries(v)) (el as HTMLElement).style.setProperty(p, String(pv ?? ''));
-            } else el.setAttribute('style', String(v ?? ''));
-          } else if (v === null || v === undefined || v === false) {
-            el.removeAttribute(attr);
-          } else if (v === true) {
-            el.setAttribute(attr, '');
-          } else {
-            el.setAttribute(attr, String(v));
-          }
-        } catch (e) { console.error(`x-bind:${attr} error: ${value}`, e); }
-      }));
+
+      if (attr === 'class') {
+        // Track which classes are managed by this binding so we can remove stale ones.
+        // Handles string (space-separated), array (truthy strings), and object ({cls: bool}) syntax.
+        const managed = new Set<string>();
+        cleanups.push(effect(() => {
+          try {
+            const v = fn(scope, el);
+            const next = new Set<string>();
+            if (Array.isArray(v)) {
+              for (const c of v as unknown[]) {
+                if (c && typeof c === 'string') {
+                  for (const cls of (c as string).split(/\s+/).filter(Boolean)) next.add(cls);
+                }
+              }
+            } else if (v !== null && typeof v === 'object') {
+              for (const [cls, on] of Object.entries(v as Record<string, unknown>)) {
+                if (Boolean(on)) next.add(cls);
+              }
+            } else if (typeof v === 'string') {
+              for (const cls of v.split(/\s+/).filter(Boolean)) next.add(cls);
+            }
+            // Remove classes no longer active (diff to avoid unnecessary DOM thrash)
+            for (const c of managed) if (!next.has(c)) el.classList.remove(c);
+            // Add newly active classes
+            for (const c of next) if (!managed.has(c)) el.classList.add(c);
+            managed.clear();
+            for (const c of next) managed.add(c);
+          } catch (e) { console.error(`x-bind:class error: ${value}`, e); }
+        }));
+
+      } else if (attr === 'style') {
+        cleanups.push(effect(() => {
+          try {
+            const v = fn(scope, el);
+            if (Array.isArray(v)) {
+              // Array of style objects — merge in order
+              for (const obj of v as unknown[]) {
+                if (obj !== null && typeof obj === 'object') {
+                  for (const [p, pv] of Object.entries(obj as Record<string, unknown>)) {
+                    const cssProp = p.startsWith('--') ? p : p.replace(/[A-Z]/g, m => '-' + m.toLowerCase());
+                    (el as HTMLElement).style.setProperty(cssProp, String(pv ?? ''));
+                  }
+                }
+              }
+            } else if (v !== null && typeof v === 'object') {
+              for (const [p, pv] of Object.entries(v as Record<string, unknown>)) {
+                // Support both camelCase (backgroundColor) and CSS custom properties (--my-var)
+                const cssProp = p.startsWith('--') ? p : p.replace(/[A-Z]/g, m => '-' + m.toLowerCase());
+                (el as HTMLElement).style.setProperty(cssProp, String(pv ?? ''));
+              }
+            } else {
+              el.setAttribute('style', String(v ?? ''));
+            }
+          } catch (e) { console.error(`x-bind:style error: ${value}`, e); }
+        }));
+
+      } else {
+        cleanups.push(effect(() => {
+          try {
+            const v = fn(scope, el);
+            if (v === null || v === undefined || v === false) {
+              el.removeAttribute(attr);
+            } else if (v === true) {
+              el.setAttribute(attr, '');
+            } else {
+              el.setAttribute(attr, String(v));
+            }
+          } catch (e) { console.error(`x-bind:${attr} error: ${value}`, e); }
+        }));
+      }
 
     } else if (name.startsWith(D_ON) || name.startsWith('@')) {
       const evtStr = name.startsWith('@') ? name.slice(1) : name.slice(D_ON.length);
@@ -397,7 +473,7 @@ function processElement(el: Element, scope: ComponentScope): () => void {
           if (mods.has('space') && e.key !== ' ') return;
           if (mods.has('tab') && e.key !== 'Tab') return;
         }
-        try { fn(scope, e); }
+        try { fn(scope, e, el); }
         catch (err) { console.error(`@${evtStr} error: ${value}`, err); }
       };
       el.addEventListener(evtName, handler, { once: mods.has('once'), capture: mods.has('capture') });
@@ -431,6 +507,89 @@ function createItemScope(
   };
 }
 
+// Walk and process all directive-bearing children within a content fragment,
+// skipping nested x-data, x-for, and x-if roots (each handled separately).
+// Returns a list of cleanup functions.
+function processChildren(root: Element, scope: ComponentScope): (() => void)[] {
+  const cleanups: (() => void)[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+    acceptNode(node: Node) {
+      const n = node as Element;
+      if (n.hasAttribute(D_DATA)) return NodeFilter.FILTER_REJECT;
+      if (n.tagName === 'TEMPLATE' && (n.hasAttribute(D_FOR) || n.hasAttribute(D_IF))) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let node: Element | null;
+  while ((node = walker.nextNode() as Element | null)) {
+    cleanups.push(processElement(node, scope));
+  }
+  // Process x-for and x-if templates within this root (not inside nested x-data)
+  root.querySelectorAll(`template[${D_FOR}], template[${D_IF}]`).forEach(t => {
+    // Skip if inside a nested x-data or a nested x-for/x-if that hasn't been removed yet
+    let p = t.parentElement;
+    while (p && p !== root) {
+      if (p.hasAttribute(D_DATA)) return;
+      p = p.parentElement;
+    }
+    if ((t as HTMLTemplateElement).hasAttribute(D_FOR)) {
+      cleanups.push(processForDirective(t as HTMLTemplateElement, scope));
+    } else if ((t as HTMLTemplateElement).hasAttribute(D_IF)) {
+      cleanups.push(processIfDirective(t as HTMLTemplateElement, scope));
+    }
+  });
+  return cleanups;
+}
+
+// x-if directive: conditionally insert/remove a template's content based on an expression.
+// Must be placed on a <template> element.
+function processIfDirective(template: HTMLTemplateElement, scope: ComponentScope): () => void {
+  const ifExpr = template.getAttribute(D_IF);
+  if (!ifExpr) return () => {};
+
+  const anchor = document.createComment('x-if');
+  template.parentNode?.insertBefore(anchor, template);
+  template.remove();
+
+  const evalCond = mkEval(ifExpr, buildWithCode(scope));
+  let currentElement: Element | null = null;
+  let currentCleanup: (() => void) | null = null;
+
+  const cleanup = effect(() => {
+    try {
+      const shown = Boolean(evalCond(scope, anchor as unknown as Element));
+      untrack(() => {
+        if (shown && !currentElement) {
+          // Insert template content
+          const content = template.content.cloneNode(true) as DocumentFragment;
+          const element = content.firstElementChild;
+          if (!element) return;
+          const childCleanups: (() => void)[] = [processElement(element, scope)];
+          for (const c of processChildren(element, scope)) childCleanups.push(c);
+          anchor.parentNode?.insertBefore(element, anchor.nextSibling);
+          currentElement = element;
+          currentCleanup = () => childCleanups.forEach(f => f());
+        } else if (!shown && currentElement) {
+          // Remove template content
+          currentElement.remove();
+          currentCleanup?.();
+          currentElement = null;
+          currentCleanup = null;
+        }
+      });
+    } catch (e) {
+      console.error(`x-if error: ${ifExpr}`, e);
+    }
+  });
+
+  return () => {
+    cleanup();
+    currentElement?.remove();
+    currentCleanup?.();
+    anchor.remove();
+  };
+}
+
 function processForDirective(template: HTMLTemplateElement, parentScope: ComponentScope): () => void {
   const forExpr = template.getAttribute(D_FOR);
   if (!forExpr) return () => {};
@@ -452,7 +611,7 @@ function processForDirective(template: HTMLTemplateElement, parentScope: Compone
 
   const getKey = (itemScope: ComponentScope, index: number): unknown => {
     if (!keyExpr) return index;
-    return (mkEval(keyExpr, buildWithCode(itemScope)))(itemScope);
+    return (mkEval(keyExpr, buildWithCode(itemScope)))(itemScope, itemScope.el as Element);
   };
 
   const createForItem = (item: unknown, index: number): ForItem => {
@@ -466,9 +625,13 @@ function processForDirective(template: HTMLTemplateElement, parentScope: Compone
     const walker = document.createTreeWalker(element, NodeFilter.SHOW_ELEMENT);
     let node: Element | null;
     while ((node = walker.nextNode() as Element | null)) {
-      cleanups.push(node.tagName === 'TEMPLATE' && node.hasAttribute(D_FOR)
-        ? processForDirective(node as HTMLTemplateElement, itemScope)
-        : processElement(node, itemScope));
+      if (node.tagName === 'TEMPLATE' && node.hasAttribute(D_FOR)) {
+        cleanups.push(processForDirective(node as HTMLTemplateElement, itemScope));
+      } else if (node.tagName === 'TEMPLATE' && node.hasAttribute(D_IF)) {
+        cleanups.push(processIfDirective(node as HTMLTemplateElement, itemScope));
+      } else {
+        cleanups.push(processElement(node, itemScope));
+      }
     }
 
     return {
@@ -515,7 +678,7 @@ function processForDirective(template: HTMLTemplateElement, parentScope: Compone
       }
 
       // Move only if not already in the correct position
-      const expected = prev ? prev.nextSibling : anchor.nextSibling;
+      const expected: ChildNode | null = prev ? prev.nextSibling : anchor.nextSibling;
       if (fi.element !== expected) {
         anchor.parentNode?.insertBefore(fi.element, expected);
       }
@@ -525,7 +688,7 @@ function processForDirective(template: HTMLTemplateElement, parentScope: Compone
 
   const cleanup = effect(() => {
     try {
-      const items = toIterable(evalItems(parentScope));
+      const items = toIterable(evalItems(parentScope, anchor as unknown as Element));
       if (!items) { console.error(`x-for: "${arrayExpr}" must be array, object, or number`); return; }
       // Reconcile in an untracked context so that effects created for each item (x-model,
       // x-text, etc.) are NOT registered as dependencies of this outer x-for computed.
@@ -546,8 +709,11 @@ function processForDirective(template: HTMLTemplateElement, parentScope: Compone
 }
 
 function initializeComponent(root: Element): void {
-  const dataAttr = root.getAttribute(D_DATA);
-  if (!dataAttr) return;
+  // getAttribute returns null when no attribute, '' when attribute has no value (e.g. <div x-data>)
+  const rawData = root.getAttribute(D_DATA);
+  if (rawData === null) return;
+  // Treat empty x-data (bare attribute or empty string) as an empty object
+  const dataAttr = rawData.trim() || '{}';
 
   // Skip already-initialized components to prevent double-processing.
   // Re-initialization only makes sense when the element is a fresh DOM node
@@ -573,19 +739,21 @@ function initializeComponent(root: Element): void {
 
   processElement(root, scope);
 
-  // Collect x-for templates before walking (they remove themselves from DOM during processing)
+  // Collect x-for and x-if templates before walking (they remove themselves from DOM during processing)
   const forTemplates: HTMLTemplateElement[] = [];
-  root.querySelectorAll(`template[${D_FOR}]`).forEach(el => {
+  const ifTemplates: HTMLTemplateElement[] = [];
+  root.querySelectorAll(`template[${D_FOR}], template[${D_IF}]`).forEach(el => {
     let parent = el.parentElement;
     while (parent && parent !== root) {
       if (parent.hasAttribute(D_DATA)) return;
       parent = parent.parentElement;
     }
-    forTemplates.push(el as HTMLTemplateElement);
+    if (el.hasAttribute(D_FOR)) forTemplates.push(el as HTMLTemplateElement);
+    else if (el.hasAttribute(D_IF)) ifTemplates.push(el as HTMLTemplateElement);
   });
 
   // Walk child elements.
-  // Use FILTER_REJECT on nested x-data roots and x-for templates so the entire
+  // Use FILTER_REJECT on nested x-data roots, x-for, and x-if templates so the entire
   // subtree is skipped — not just the root node. This prevents the outer walker
   // from processing children that belong to a nested scope, and avoids
   // double-processing elements inserted by x-for on re-initialization.
@@ -593,7 +761,7 @@ function initializeComponent(root: Element): void {
     acceptNode(node: Node) {
       const el = node as Element;
       if (el.hasAttribute(D_DATA)) return NodeFilter.FILTER_REJECT;
-      if (el.tagName === 'TEMPLATE' && el.hasAttribute(D_FOR)) return NodeFilter.FILTER_REJECT;
+      if (el.tagName === 'TEMPLATE' && (el.hasAttribute(D_FOR) || el.hasAttribute(D_IF))) return NodeFilter.FILTER_REJECT;
       return NodeFilter.FILTER_ACCEPT;
     },
   });
@@ -603,6 +771,7 @@ function initializeComponent(root: Element): void {
   }
 
   for (const t of forTemplates) processForDirective(t, scope);
+  for (const t of ifTemplates) processIfDirective(t, scope);
 }
 
 function init(root: Element | Document = document): void {
