@@ -48,6 +48,10 @@ const D_MODEL = 'x-model';
 const D_ON = 'x-on:';
 const D_FOR = 'x-for';
 
+// WeakMap to store initialized component scopes keyed by their root element.
+// Avoids attaching arbitrary properties to DOM nodes and provides proper type safety.
+const scopeMap = new WeakMap<Element, ComponentScope>();
+
 interface ForExpression {
   itemName: string;
   indexName: string | null;
@@ -119,7 +123,7 @@ function extractFnBody(fn: Function): string {
   return m ? m[1].trim() : 'return undefined';
 }
 
-function createScopeFromString(el: Element, dataStr: string): ComponentScope {
+function createScopeFromString(el: Element, dataStr: string, parentScope?: ComponentScope): ComponentScope {
   const signals: SignalStore = {};
   const computeds: ComputedStore = {};
 
@@ -127,14 +131,17 @@ function createScopeFromString(el: Element, dataStr: string): ComponentScope {
     signals,
     computeds,
     el,
+    parent: parentScope,
     get(key) {
       if (key in signals) return signals[key].get();
       if (key in computeds) return computeds[key].get();
+      if (parentScope) return parentScope.get(key);
       return undefined;
     },
     set(key, value) {
-      if (key in signals) signals[key].set(value);
-      else signals[key] = new State(value);
+      if (key in signals) { signals[key].set(value); return; }
+      if (parentScope) { parentScope.set(key, value); return; }
+      signals[key] = new State(value);
     },
   };
 
@@ -185,7 +192,7 @@ function createScopeFromString(el: Element, dataStr: string): ComponentScope {
     }
   }
 
-  (el as unknown as Record<string, unknown>).__k2_scope = scope;
+  scopeMap.set(el, scope);
 
   if (initFn) initFn.call(proxy);
 
@@ -435,9 +442,23 @@ function initializeComponent(root: Element): void {
   const dataAttr = root.getAttribute(D_DATA);
   if (!dataAttr) return;
 
+  // Skip already-initialized components to prevent double-processing.
+  // Re-initialization only makes sense when the element is a fresh DOM node
+  // (e.g. added by server-side rendering or a framework like Livewire).
+  if (scopeMap.has(root)) return;
+
+  // Find the nearest ancestor component scope so nested x-data can read/write parent state
+  let parentScope: ComponentScope | undefined;
+  let ancestor = root.parentElement;
+  while (ancestor) {
+    const s = scopeMap.get(ancestor);
+    if (s !== undefined) { parentScope = s; break; }
+    ancestor = ancestor.parentElement;
+  }
+
   let scope: ComponentScope;
   try {
-    scope = createScopeFromString(root, dataAttr);
+    scope = createScopeFromString(root, dataAttr, parentScope);
   } catch (e) {
     console.error(`Error parsing x-data: ${dataAttr}`, e);
     return;
@@ -456,11 +477,21 @@ function initializeComponent(root: Element): void {
     forTemplates.push(el as HTMLTemplateElement);
   });
 
-  // Walk child elements, skipping nested x-data roots and x-for templates
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+  // Walk child elements.
+  // Use FILTER_REJECT on nested x-data roots and x-for templates so the entire
+  // subtree is skipped — not just the root node. This prevents the outer walker
+  // from processing children that belong to a nested scope, and avoids
+  // double-processing elements inserted by x-for on re-initialization.
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+    acceptNode(node: Node) {
+      const el = node as Element;
+      if (el.hasAttribute(D_DATA)) return NodeFilter.FILTER_REJECT;
+      if (el.tagName === 'TEMPLATE' && el.hasAttribute(D_FOR)) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
   let node: Element | null;
   while ((node = walker.nextNode() as Element | null)) {
-    if (node.hasAttribute(D_DATA) || (node.tagName === 'TEMPLATE' && node.hasAttribute(D_FOR))) continue;
     processElement(node, scope);
   }
 
