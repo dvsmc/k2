@@ -1,6 +1,6 @@
 {
   "name": "@farhanaliraza/k2-js",
-  "version": "0.1.1",
+  "version": "1.1.0",
   "description": "Ultra-fast Alpine.js alternative powered by TC39 Signals. 3.6KB gzipped, 5-10x faster.",
   "type": "module",
   "main": "dist/k2.min.js",
